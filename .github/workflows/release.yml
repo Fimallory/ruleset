@@ -1,10 +1,7 @@
 name: Build and Release Rule-Sets
 
 on:
-  # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
-
-  # Runs automatically at your specified times
   schedule:
     # 6:45 AM CST (UTC+8) is 22:45 UTC on the previous day
     - cron: "45 22 * * *"
@@ -29,47 +26,61 @@ jobs:
       - name: Install Python dependencies
         run: pip install requests
 
-      - name: Run converter script to generate JSON files
+      # 安装 Sing-box 并移动到系统路径，以便 Python 脚本调用
+      - name: Setup Sing-box
+        run: |
+          echo "Downloading Sing-box..."
+          LATEST_URL=$(curl -sL "https://api.github.com/repos/SagerNet/sing-box/releases/latest" | grep "browser_download_url" | grep "linux-amd64.tar.gz" | head -n 1 | cut -d '"' -f 4)
+          curl -L -o sing-box.tar.gz "$LATEST_URL"
+          tar -xzf sing-box.tar.gz
+          # 查找解压出的目录（通常包含版本号）
+          DIR_NAME=$(find . -maxdepth 1 -type d -name "sing-box*linux*")
+          sudo mv "$DIR_NAME/sing-box" /usr/local/bin/
+          rm -rf sing-box.tar.gz "$DIR_NAME"
+          echo "Sing-box version:"
+          sing-box version
+
+      # 安装 Mihomo 并移动到系统路径，以便 Python 脚本调用
+      - name: Setup Mihomo
+        run: |
+          echo "Downloading Mihomo..."
+          # 获取最新的 linux-amd64 版本 (排除 alpha/beta，通常 latest 接口返回稳定版)
+          LATEST_URL=$(curl -sL "https://api.github.com/repos/MetaCubeX/mihomo/releases/latest" | grep "browser_download_url" | grep "linux-amd64-v" | grep ".gz" | head -n 1 | cut -d '"' -f 4)
+          curl -L -o mihomo.gz "$LATEST_URL"
+          gunzip mihomo.gz
+          chmod +x mihomo
+          sudo mv mihomo /usr/local/bin/
+          echo "Mihomo version:"
+          mihomo -v
+
+      # 运行 Python 脚本，它会自动检测上述工具并生成 json, srs, mrs
+      - name: Run converter script
         run: python convert.py
 
-      - name: Download sing-box binary
-        run: |
-          LATEST_URL=$(curl -sL "https://api.github.com/repos/SagerNet/sing-box/releases/latest" | grep "browser_download_url" | grep "linux-amd64" | cut -d '"' -f 4)
-          wget -q "$LATEST_URL" -O sing-box.tar.gz
-          tar -xzf sing-box.tar.gz
-          mv sing-box-*-linux-amd64/sing-box .
-          chmod +x ./sing-box
-          ./sing-box version
-
-      - name: Compile JSON rules to SRS format
-        run: |
-          mkdir -p dist
-          for json_file in dist/*.json; do
-            srs_file="${json_file%.json}.srs"
-            echo "Compiling $json_file to $srs_file..."
-            ./sing-box rule-set compile "$json_file" --output "$srs_file"
-          done
-
-      - name: 🚀 Deploy SRS files to release branch
+      # 将 dist 目录下的所有文件部署到 release 分支（作为静态文件托管）
+      - name: 🚀 Deploy to release branch
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: ./dist
           publish_branch: release
-          force_orphan: true # Creates a clean branch history with only the latest files
+          force_orphan: true
           commit_message: "Update rule-sets (${{ github.sha }}) [ci skip]"
 
-      - name: Set Release Tag and Name as Unix Timestamp
+      - name: Set Release Tag
         id: set_vars
         run: |
           TIMESTAMP=$(date +%s)
-          echo "RELEASE_TAG_AND_NAME=$TIMESTAMP" >> $GITHUB_ENV
+          echo "RELEASE_TAG=$TIMESTAMP" >> $GITHUB_ENV
 
+      # 创建 Release 并上传三种格式的文件
       - name: 📦 Create New GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ env.RELEASE_TAG_AND_NAME }}
-          name: ${{ env.RELEASE_TAG_AND_NAME }}
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: ${{ env.RELEASE_TAG }}
           generate_release_notes: true
           files: |
+            dist/*.json
             dist/*.srs
+            dist/*.mrs
