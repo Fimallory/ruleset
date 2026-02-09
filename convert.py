@@ -102,18 +102,19 @@ def parse_rules(group_name, urls):
     print(f"  -> Parsed {len(raw_rules)} raw rules.")
     return raw_rules
 
-def detect_rule_type(raw_rules):
+def detect_rule_types(raw_rules):
     """
-    Detects if the ruleset is 'domain' or 'ip' based on content.
-    Used for Mihomo compilation.
+    Detects what types of rules are present in the ruleset.
+    Returns (has_domain, has_ip).
     """
-    # If there is ANY domain rule, treat as domain (mixed is usually handled as domain behavior)
+    has_domain = False
+    has_ip = False
     for r_type, _ in raw_rules:
         if r_type.startswith('DOMAIN'):
-            return 'domain'
-    
-    # If no domains found, assume it's an IP list (like CNCIDR)
-    return 'ip'
+            has_domain = True
+        elif r_type == 'IP-CIDR':
+            has_ip = True
+    return has_domain, has_ip
 
 def generate_singbox_json(raw_rules, output_path):
     """
@@ -158,16 +159,46 @@ def generate_singbox_json(raw_rules, output_path):
         print(f"  [!] Error writing JSON {output_path}: {e}")
         return False
 
-def generate_mihomo_yaml(raw_rules, output_path):
+def generate_mihomo_domain_yaml(raw_rules, output_path):
     """
-    Converts raw rules to Mihomo/Clash YAML payload format.
+    Converts raw rules to Mihomo domain YAML payload format.
+    DOMAIN -> plain domain, DOMAIN-SUFFIX -> +.domain
     """
+    skipped = 0
+    count = 0
     try:
         with open(output_path, 'w', encoding='utf-8') as f:
             f.write("payload:\n")
             for r_type, val in raw_rules:
-                f.write(f"  - {r_type},{val}\n")
-        return True
+                if r_type == 'DOMAIN':
+                    f.write(f"  - '{val}'\n")
+                    count += 1
+                elif r_type == 'DOMAIN-SUFFIX':
+                    f.write(f"  - '+.{val}'\n")
+                    count += 1
+                elif r_type == 'DOMAIN-KEYWORD':
+                    skipped += 1
+        if skipped:
+            print(f"  [!] Skipped {skipped} DOMAIN-KEYWORD rules (unsupported in domain MRS)")
+        return count > 0
+    except IOError as e:
+        print(f"  [!] Error writing YAML {output_path}: {e}")
+        return False
+
+def generate_mihomo_ipcidr_yaml(raw_rules, output_path):
+    """
+    Converts raw rules to Mihomo ipcidr YAML payload format.
+    IP-CIDR -> plain CIDR notation.
+    """
+    count = 0
+    try:
+        with open(output_path, 'w', encoding='utf-8') as f:
+            f.write("payload:\n")
+            for r_type, val in raw_rules:
+                if r_type == 'IP-CIDR':
+                    f.write(f"  - '{val}'\n")
+                    count += 1
+        return count > 0
     except IOError as e:
         print(f"  [!] Error writing YAML {output_path}: {e}")
         return False
@@ -235,8 +266,6 @@ def main():
         # File Paths
         json_path = OUTPUT_DIR / f"{group_name}.json"
         srs_path = OUTPUT_DIR / f"{group_name}.srs"
-        yaml_path = OUTPUT_DIR / f"{group_name}.yaml"
-        mrs_path = OUTPUT_DIR / f"{group_name}.mrs"
 
         # 2. Generate Sing-box JSON & SRS
         if generate_singbox_json(raw_rules, json_path):
@@ -245,14 +274,26 @@ def main():
                 compile_srs(json_path, srs_path)
 
         # 3. Generate Mihomo YAML & MRS
-        if generate_mihomo_yaml(raw_rules, yaml_path):
-            if can_compile_mrs:
-                # Detect type: 'ip' for CNCIDR, 'domain' for others
-                r_type = detect_rule_type(raw_rules)
-                compile_mrs(yaml_path, mrs_path, "classic")
-            
-            # Remove intermediate YAML to keep dist folder clean (Optional)
-            # yaml_path.unlink(missing_ok=True) 
+        has_domain, has_ip = detect_rule_types(raw_rules)
+        has_both = has_domain and has_ip
+
+        if has_domain:
+            suffix = "_domain" if has_both else ""
+            yaml_path = OUTPUT_DIR / f"{group_name}{suffix}.yaml"
+            mrs_path = OUTPUT_DIR / f"{group_name}{suffix}.mrs"
+            if generate_mihomo_domain_yaml(raw_rules, yaml_path):
+                print(f"  -> Domain YAML saved: {yaml_path.name}")
+                if can_compile_mrs:
+                    compile_mrs(yaml_path, mrs_path, "domain")
+
+        if has_ip:
+            suffix = "_ip" if has_both else ""
+            yaml_path = OUTPUT_DIR / f"{group_name}{suffix}.yaml"
+            mrs_path = OUTPUT_DIR / f"{group_name}{suffix}.mrs"
+            if generate_mihomo_ipcidr_yaml(raw_rules, yaml_path):
+                print(f"  -> IP YAML saved: {yaml_path.name}")
+                if can_compile_mrs:
+                    compile_mrs(yaml_path, mrs_path, "ipcidr")
 
         print("-" * 40)
 
