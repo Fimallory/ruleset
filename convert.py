@@ -249,7 +249,7 @@ def main():
             if can_compile_mrs:
                 # Detect type: 'ip' for CNCIDR, 'domain' for others
                 r_type = detect_rule_type(raw_rules)
-                compile_mrs(yaml_path, mrs_path, r_type)
+                compile_mrs(yaml_path, mrs_path, classic)
             
             # Remove intermediate YAML to keep dist folder clean (Optional)
             # yaml_path.unlink(missing_ok=True) 
